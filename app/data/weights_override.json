@@ -1,0 +1,10 @@
+{
+  "blacklist": 100,
+  "high_amount": 30,
+  "new_address": 50,
+  "sensitive_method": 15,
+  "sensitive_token": 15,
+  "unusual_hour": 10,
+  "velocity": 80,
+  "watchlist": 20
+}

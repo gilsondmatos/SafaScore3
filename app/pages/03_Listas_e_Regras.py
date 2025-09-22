@@ -1,64 +1,176 @@
+# app/pages/03_Listas_e_Regras.py
 from __future__ import annotations
+import sys
+from pathlib import Path
 import pandas as pd
 import streamlit as st
 
-from app.ui.utils import (
-    DATA_DIR,
-    render_header,
-    load_list_df,
-    save_list_df,
-    download_button_for_list,
+# Garante import relativo
+THIS = Path(__file__).resolve()
+ROOT = THIS.parents[2]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from app.ui.utils import (  # noqa: E402
+    DATA_DIR, inject_css, render_header,
+    read_csv, write_csv, df_to_editor,
+    load_weights, save_weights
 )
 
-# Cabeçalho
+st.set_page_config(page_title="Listas e Regras — SafeScore", layout="wide")
+inject_css()
 render_header("Listas e Regras", "Edite listas e configure pesos sem sair do app")
 
-st.caption(f"Diretório de dados: `{DATA_DIR}`")
+# Caminhos
+BLACKLIST = DATA_DIR / "blacklist.csv"
+WATCHLIST = DATA_DIR / "watchlist.csv"
+SENS_TOK = DATA_DIR / "sensitive_tokens.csv"
+SENS_MET = DATA_DIR / "sensitive_methods.csv"
 
-# ----------------- Editor de listas -----------------
-st.subheader("Listas (CSV)")
-
-def list_block(kind: str, title: str):
-    df, path, cols = load_list_df(kind)
-    st.markdown(f"**{title}** — `{path}`")
-    with st.form(f"form_{kind}", clear_on_submit=False):
-        edited = st.data_editor(
-            df,
-            num_rows="dynamic",
+# -----------------------------------
+# Seção: Blacklist
+# -----------------------------------
+st.markdown("### blacklist.csv")
+with st.container():
+    st.caption("Itens atuais (adicione/edite/exclua diretamente na tabela).")
+    df_bl = read_csv(BLACKLIST, ["address", "reason"])
+    ed_bl = df_to_editor(df_bl, key="ed_blacklist")
+    c1, c2 = st.columns([1, 3])
+    with c1:
+        if st.button("💾 Salvar alterações (blacklist.csv)", use_container_width=True):
+            # Limpa linhas vazias
+            ed_bl = ed_bl.fillna("").replace({"address": r"^\s*$"}, {"address": ""}, regex=True)
+            ed_bl = ed_bl[ed_bl["address"].astype(str).str.strip() != ""]
+            write_csv(BLACKLIST, ed_bl, ["address", "reason"])
+            st.success("Blacklist salva.")
+    with c2:
+        st.download_button(
+            "⬇️ Baixar CSV (blacklist.csv)",
+            data=ed_bl.to_csv(index=False).encode("utf-8"),
+            file_name="blacklist.csv",
+            mime="text/csv",
             use_container_width=True,
-            height=260,
-            key=f"editor_{kind}",
         )
-        ok = st.form_submit_button("Salvar alterações", type="primary")
-        if ok:
-            save_list_df(kind, edited)
-            st.success(f"{title}: salvo em {path.name}")
 
-    # download deve ficar **fora** do form
-    download_button_for_list(kind)
+st.markdown("---")
 
-cols_top = st.columns(2)
-with cols_top[0]:
-    list_block("blacklist", "blacklist.csv")
-with cols_top[1]:
-    list_block("watchlist", "watchlist.csv")
+# -----------------------------------
+# Seção: Watchlist
+# -----------------------------------
+st.markdown("### watchlist.csv")
+with st.container():
+    st.caption("Itens atuais (adicione/edite/exclua diretamente na tabela).")
+    df_wl = read_csv(WATCHLIST, ["address", "note"])
+    ed_wl = df_to_editor(df_wl, key="ed_watchlist")
+    c1, c2 = st.columns([1, 3])
+    with c1:
+        if st.button("💾 Salvar alterações (watchlist.csv)", use_container_width=True):
+            ed_wl = ed_wl.fillna("").replace({"address": r"^\s*$"}, {"address": ""}, regex=True)
+            ed_wl = ed_wl[ed_wl["address"].astype(str).str.strip() != ""]
+            write_csv(WATCHLIST, ed_wl, ["address", "note"])
+            st.success("Watchlist salva.")
+    with c2:
+        st.download_button(
+            "⬇️ Baixar CSV (watchlist.csv)",
+            data=ed_wl.to_csv(index=False).encode("utf-8"),
+            file_name="watchlist.csv",
+            mime="text/csv",
+            use_container_width=True,
+        )
 
-cols_mid = st.columns(2)
-with cols_mid[0]:
-    list_block("sensitive_tokens", "sensitive_tokens.csv")
-with cols_mid[1]:
-    list_block("sensitive_methods", "sensitive_methods.csv")
+st.markdown("---")
 
-st.divider()
-list_block("known_addresses", "known_addresses.csv")
+# -----------------------------------
+# Seção: Tokens e Methods sensíveis (lado a lado)
+# -----------------------------------
+left, right = st.columns(2, gap="large")
 
-# ----------------- Pesos (somente leitura aqui) -----------------
-st.divider()
-st.subheader("Pesos (regras) atuais")
+with left:
+    st.markdown("### sensitive_tokens.csv")
+    st.caption("Tokens atuais (adicione/edite/exclua diretamente na tabela).")
+    df_tok = read_csv(SENS_TOK, ["token"])
+    ed_tok = df_to_editor(df_tok, key="ed_tokens")
+    c1, c2 = st.columns([1, 3])
+    with c1:
+        if st.button("💾 Salvar alterações", use_container_width=True):
+            ed_tok = ed_tok.fillna("").replace({"token": r"^\s*$"}, {"token": ""}, regex=True)
+            ed_tok = ed_tok[ed_tok["token"].astype(str).str.strip() != ""]
+            write_csv(SENS_TOK, ed_tok, ["token"])
+            st.success("Lista de tokens salva.")
+    with c2:
+        st.download_button(
+            "⬇️ Baixar CSV (sensitive_tokens.csv)",
+            data=ed_tok.to_csv(index=False).encode("utf-8"),
+            file_name="sensitive_tokens.csv",
+            mime="text/csv",
+            use_container_width=True,
+        )
 
-try:
-    from app.engine.scoring import DEFAULT_WEIGHTS  # leitura apenas
-    st.caption("Os pesos default residem em `app/engine/scoring.py` → `DEFAULT_WEIGHTS`.")
-    st.json(DEFAULT_WEIGHTS)
-except Exception:
-    st.info("Não foi possível ler DEFAULT_WEIGHTS de app/engine/scoring.py.")
+with right:
+    st.markdown("### sensitive_methods.csv")
+    st.caption("Methods atuais (adicione/edite/exclua diretamente na tabela).")
+    df_met = read_csv(SENS_MET, ["method"])
+    ed_met = df_to_editor(df_met, key="ed_methods")
+    c1, c2 = st.columns([1, 3])
+    with c1:
+        if st.button("💾 Salvar alterações (sensitive_methods.csv)", use_container_width=True):
+            ed_met = ed_met.fillna("").replace({"method": r"^\s*$"}, {"method": ""}, regex=True)
+            ed_met = ed_met[ed_met["method"].astype(str).str.strip() != ""]
+            write_csv(SENS_MET, ed_met, ["method"])
+            st.success("Lista de methods salva.")
+    with c2:
+        st.download_button(
+            "⬇️ Baixar CSV (sensitive_methods.csv)",
+            data=ed_met.to_csv(index=False).encode("utf-8"),
+            file_name="sensitive_methods.csv",
+            mime="text/csv",
+            use_container_width=True,
+        )
+
+st.markdown("---")
+
+# -----------------------------------
+# Seção: Pesos (regras)
+# -----------------------------------
+st.markdown("### Pesos (regras) atuais")
+st.caption("Ajuste nos campos e clique em **Salvar pesos**. Os valores abaixo já vêm dos padrões recomendados.")
+
+weights = load_weights()  # <-- carrega defaults (se não existir JSON)
+rules = list(weights.keys())
+
+# Layout em duas colunas para ficar mais respirado
+col_a, col_b = st.columns(2, gap="large")
+half = (len(rules) + 1) // 2
+
+with col_a:
+    st.subheader("Regras", divider="orange")
+    for rule in rules[:half]:
+        val = st.number_input(
+            rule,
+            min_value=0, max_value=100,
+            step=1,
+            value=int(weights.get(rule, 0)),
+            key=f"w_{rule}",
+        )
+        weights[rule] = int(val)
+
+with col_b:
+    st.subheader(" ", divider="orange")
+    for rule in rules[half:]:
+        val = st.number_input(
+            rule,
+            min_value=0, max_value=100,
+            step=1,
+            value=int(weights.get(rule, 0)),
+            key=f"w_{rule}",
+        )
+        weights[rule] = int(val)
+
+st.markdown("")
+c1, c2 = st.columns([1, 3])
+with c1:
+    if st.button("💾 Salvar pesos", use_container_width=True):
+        save_weights(weights)
+        st.success("Pesos salvos em app/data/weights.json. O motor de score passará a usar esses valores.")
+with c2:
+    st.json(weights, expanded=False)

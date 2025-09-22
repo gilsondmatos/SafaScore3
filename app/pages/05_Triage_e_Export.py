@@ -1,56 +1,46 @@
-# --- bootstrap de caminho ---
+import pandas as pd, streamlit as st
 from pathlib import Path
-import sys
-_THIS = Path(__file__).resolve()
-_ROOT = None
-for p in _THIS.parents:
-    if (p / "app").exists():
-        _ROOT = p
-        break
-if _ROOT and str(_ROOT) not in sys.path:
-    sys.path.insert(0, str(_ROOT))
-# --- fim bootstrap ---
+from pathlib import Path
+ROOT = Path(__file__).resolve().parents[1]   # 'app' -> sobe 1 nível = raiz do projeto
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+from app.ui.utils import list_transaction_files, load_df, render_header
 
-import json
-import streamlit as st
-
-from app.ui.utils import DATA_DIR, list_transaction_files, load_df, load_threshold, render_header
-
-st.set_page_config(page_title="Triage & Export", layout="wide")
-render_header(st, "Triage & Export", "Filtre e exporte JSONL/CSV")
+st.set_page_config(page_title="Triage e Export", layout="wide")
+render_header("Triage e Export", "Filtros e exportação")
 
 files = list_transaction_files()
 if not files:
-    st.info("Nenhum CSV. Gere dados na Home.")
+    st.info("Nenhum CSV encontrado.")
     st.stop()
 
 sel = st.selectbox("Arquivo", options=files, index=len(files)-1, format_func=lambda p: p.name)
-df = load_df(sel)
-thr = load_threshold()
+df = load_df(Path(sel))
+if df.empty:
+    st.warning("Arquivo vazio.")
+    st.stop()
 
-opt = st.selectbox("Filtro", ["Críticos (< limiar)","Todos","Suspeitos (<70)","<50","Personalizado"], index=0)
-lim = 60
-if opt == "Personalizado":
-    lim = st.slider("Score abaixo de", 0, 100, 60)
+c = st.columns(4)
+txt = c[0].text_input("Endereço contém", "")
+tok = c[1].selectbox("Token", ["(todos)"] + (sorted(df["token"].dropna().unique().tolist()) if "token" in df.columns else []))
+mt  = c[2].selectbox("Método", ["(todos)"] + (sorted(df["method"].dropna().unique().tolist()) if "method" in df.columns else []))
+min_score = c[3].number_input("Score mínimo", 0, 100, 0)
 
-def apply(df):
-    if opt == "Críticos (< limiar)":
-        return df[df["score"] < thr]
-    if opt == "Todos":
-        return df
-    if opt == "Suspeitos (<70)":
-        return df[df["score"] < 70]
-    if opt == "<50":
-        return df[df["score"] < 50]
-    return df[df["score"] < lim]
+flt = df.copy()
+if txt.strip():
+    mask = False
+    for col in ["from_address","to_address"]:
+        if col in flt.columns:
+            mask = mask | flt[col].fillna("").str.contains(txt, case=False)
+    flt = flt[mask]
+if tok!="(todos)" and "token" in flt.columns:
+    flt = flt[flt["token"]==tok]
+if mt!="(todos)" and "method" in flt.columns:
+    flt = flt[flt["method"]==mt]
+if "score" in flt.columns:
+    flt = flt[flt["score"]>=int(min_score)]
 
-fdf = apply(df)
-st.metric("Registros", len(fdf))
-st.dataframe(fdf.head(50), use_container_width=True, height=300)
-
-col1, col2 = st.columns([1,1])
-with col1:
-    j = "\n".join(json.dumps(r, ensure_ascii=False) for r in fdf.to_dict(orient="records"))
-    st.download_button("Baixar JSONL", data=j.encode("utf-8"), file_name=f"{sel.stem}_filtro.jsonl", mime="application/json")
-with col2:
-    st.download_button("Baixar CSV", data=fdf.to_csv(index=False).encode("utf-8"), file_name=f"{sel.stem}_filtro.csv", mime="text/csv")
+st.caption(f"Mostrando {len(flt)} de {len(df)} linhas.")
+st.dataframe(flt, use_container_width=True, height=460)
+st.download_button("Baixar CSV filtrado", flt.to_csv(index=False).encode("utf-8"),
+                   file_name=f"triage_{Path(sel).stem}.csv", mime="text/csv")

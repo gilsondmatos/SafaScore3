@@ -1,72 +1,80 @@
-# --- bootstrap de caminho ---
+import io, pandas as pd, streamlit as st
 from pathlib import Path
-import sys
-_THIS = Path(__file__).resolve()
-_ROOT = None
-for p in _THIS.parents:
-    if (p / "app").exists():
-        _ROOT = p
-        break
-if _ROOT and str(_ROOT) not in sys.path:
-    sys.path.insert(0, str(_ROOT))
-# --- fim bootstrap ---
-
-import json
-from pathlib import Path as _P
-import streamlit as st
-import pandas as pd
-
-from app.ui.utils import (
-    DATA_DIR, list_transaction_files, load_df, load_threshold, render_header
-)
+from pathlib import Path
+ROOT = Path(__file__).resolve().parents[1]   # 'app' -> sobe 1 nível = raiz do projeto
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+from app.ui.utils import list_transaction_files, load_df, load_threshold, render_header
 
 st.set_page_config(page_title="Relatórios (PDF)", layout="wide")
-render_header(st, "Relatórios (PDF)", "Gera PDF com o recorte desejado")
+render_header("Relatórios (PDF)", "Gere PDF (ou CSV) do recorte desejado")
 
 files = list_transaction_files()
 if not files:
-    st.info("Nenhum CSV. Gere dados na Home.")
+    st.info("Nenhum CSV encontrado.")
     st.stop()
 
 sel = st.selectbox("Arquivo", options=files, index=len(files)-1, format_func=lambda p: p.name)
-df = load_df(sel)
-thr = load_threshold()
+df = load_df(Path(sel))
+if df.empty:
+    st.warning("Arquivo vazio.")
+    st.stop()
 
-opt = st.selectbox(
-    "Escolha o conjunto",
-    ["Críticos (score < limiar)", "Todos", "Suspeitos (score < 70)", "Abaixo de 50", "Personalizado"],
-    index=0
-)
-custom_lim = 60
-if opt == "Personalizado":
-    custom_lim = st.slider("Score abaixo de", 0, 100, 60)
+thr = load_threshold(50)
+modo = st.radio("Recorte", ["Críticas (< limiar)","Suspeitas (entre limiar e 70)","Todas"], horizontal=True)
 
-def filter_df(df_in: pd.DataFrame) -> pd.DataFrame:
-    if opt == "Críticos (score < limiar)":
-        return df_in[df_in["score"] < thr]
-    if opt == "Todos":
-        return df_in
-    if opt == "Suspeitos (score < 70)":
-        return df_in[df_in["score"] < 70]
-    if opt == "Abaixo de 50":
-        return df_in[df_in["score"] < 50]
-    return df_in[df_in["score"] < custom_lim]
+def recorte(d: pd.DataFrame) -> pd.DataFrame:
+    if "score" not in d.columns:
+        return d.copy()
+    if modo.startswith("Críticas"):
+        return d[d["score"] < thr]
+    if modo.startswith("Suspeitas"):
+        return d[(d["score"]>=thr) & (d["score"]<70)]
+    return d.copy()
 
-fdf = filter_df(df)
-st.metric("Registros para PDF", len(fdf))
+rc = recorte(df)
+st.caption(f"Linhas no recorte: {len(rc)}")
+st.dataframe(rc.head(100), use_container_width=True, height=360)
 
-col1, col2 = st.columns([1,2])
-with col1:
-    if st.button("Gerar PDF agora", type="primary"):
-        import gerar_relatorio as gr
-        path = gr.build_pdf(rows=fdf.to_dict(orient="records"), threshold=thr)
-        st.session_state._pdf_path = str(path)
-        st.success(f"Gerado: {_P(path).name}")
+def to_pdf(data: pd.DataFrame) -> bytes:
+    try:
+        from reportlab.lib.pagesizes import A4, landscape
+        from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+        from reportlab.lib import colors
+        from reportlab.lib.styles import getSampleStyleSheet
+        buf = io.BytesIO()
+        doc = SimpleDocTemplate(buf, pagesize=landscape(A4), title="SafeScore Report")
+        styles = getSampleStyleSheet()
+        elems = [Paragraph("SafeScore — Relatório", styles["Title"]), Spacer(1,8)]
+        cols = [c for c in data.columns][:10]
+        tdata = [cols] + data[cols].astype(str).values.tolist()
+        tbl = Table(tdata, repeatRows=1)
+        tbl.setStyle(TableStyle([
+            ("BACKGROUND",(0,0),(-1,0),colors.HexColor("#23374d")),
+            ("TEXTCOLOR",(0,0),(-1,0),colors.white),
+            ("GRID",(0,0),(-1,-1),0.25,colors.grey),
+            ("FONTSIZE",(0,0),(-1,-1),8),
+        ]))
+        elems.append(tbl)
+        doc.build(elems)
+        return buf.getvalue()
+    except Exception:
+        return b""
 
-with col2:
-    p = st.session_state.get("_pdf_path")
-    if p and _P(p).exists():
-        with open(p, "rb") as f:
-            st.download_button("Baixar PDF", data=f.read(), file_name=_P(p).name, mime="application/pdf")
-    else:
-        st.info("Nenhum PDF gerado nesta sessão.")
+c1,c2 = st.columns(2)
+with c1:
+    if st.button("Gerar PDF agora"):
+        if rc.empty:
+            st.warning("Nada para converter.")
+        else:
+            pdf = to_pdf(rc)
+            if pdf:
+                st.success("PDF gerado.")
+                st.download_button("Baixar relatorio.pdf", data=pdf, file_name="relatorio.pdf", mime="application/pdf")
+            else:
+                st.warning("Sem 'reportlab'. Exportando CSV do recorte.")
+                st.download_button("Baixar recorte (CSV)", rc.to_csv(index=False).encode("utf-8"),
+                                   file_name="relatorio_recorte.csv", mime="text/csv")
+with c2:
+    st.download_button("Baixar recorte (CSV)", rc.to_csv(index=False).encode("utf-8"),
+                       file_name="relatorio_recorte.csv", mime="text/csv")
