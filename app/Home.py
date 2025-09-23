@@ -1,42 +1,89 @@
-import sys
+import subprocess
 from pathlib import Path
-ROOT = Path(__file__).resolve().parents[1]   # 'app' -> sobe 1 nível = raiz do projeto
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
 
-import sys, subprocess, os
+import pandas as pd
 import streamlit as st
-from app.ui.utils import ROOT, DATA_DIR, render_header, safe_rerun
+
+from app.ui.utils import (
+    ROOT, DATA_DIR, list_transaction_files, load_df,
+    render_header, success_alert, error_alert, info_alert
+)
 
 st.set_page_config(page_title="Dashboard (Home)", layout="wide")
-render_header("Dashboard (Home)", f"Diretório de dados: {DATA_DIR}")
 
-c1, c2 = st.columns([2,1])
+render_header(
+    st,
+    "Dashboard (Home)",
+    f"Diretório de dados: {DATA_DIR}"
+)
+
+# ------------------------------------------------------------------
+# Ações (coletar e limpar)
+# ------------------------------------------------------------------
+c1, c2 = st.columns([2, 1])
 
 with c1:
-    if st.button("⚡ Coletar agora (ETH)", type="primary", use_container_width=True):
-        try:
-            cmd = [sys.executable, "main.py", "-c", "eth"]
-            out = subprocess.run(
-                cmd, cwd=str(ROOT), capture_output=True, text=True, check=True
-            )
-            st.success("Coleta executada com sucesso.")
-            with st.expander("Log da coleta"):
-                st.code(out.stdout or "(sem saída)")
-            safe_rerun()
-        except subprocess.CalledProcessError as e:
-            st.error("Erro inesperado na coleta.")
-            with st.expander("Trace / log do erro"):
-                st.code((e.stdout or "") + "\n" + (e.stderr or ""))
+    if st.button("⚡ Coletar agora (ETH)", use_container_width=True):
+        with st.status("Executando coleta on-chain (ETH)...", expanded=True) as status:
+            try:
+                # Executa main.py com o coletor ETH
+                # Obs.: Usa o Python do mesmo ambiente
+                cmd = ["python", str(ROOT / "main.py"), "-c", "eth"]
+                proc = subprocess.run(
+                    cmd, capture_output=True, text=True, cwd=str(ROOT), timeout=180
+                )
+                st.write(proc.stdout or "")
+                if proc.returncode != 0:
+                    st.write(proc.stderr or "")
+                    status.update(label="Coleta finalizada com erros.", state="error")
+                    error_alert("Falha na coleta. Veja o log acima.")
+                else:
+                    status.update(label="Coleta finalizada.", state="complete")
+                    success_alert("Coleta concluída com sucesso.")
+            except Exception as e:
+                status.update(label="Erro inesperado na coleta.", state="error")
+                error_alert(f"Erro inesperado: {e}")
 
 with c2:
-    if st.button("🗑️  Limpar dados (CSV)", use_container_width=True):
-        try:
-            for p in DATA_DIR.glob("transactions*.csv"):
-                p.unlink(missing_ok=True)
-            (DATA_DIR / "pending_review.csv").unlink(missing_ok=True)
-            (DATA_DIR / "transactions.csv").unlink(missing_ok=True)
-            st.success("CSV(s) removidos.")
-            safe_rerun()
-        except Exception as e:
-            st.error(f"Falha ao excluir arquivos: {e}")
+    if st.button("🗑️ Limpar dados (CSV)", use_container_width=True):
+        apagados = 0
+        for p in list(DATA_DIR.glob("transactions*.csv")) + [
+            DATA_DIR / "pending_review.csv"
+        ]:
+            if p.exists():
+                try:
+                    p.unlink()
+                    apagados += 1
+                except Exception:
+                    pass
+        success_alert(f"Arquivos removidos: {apagados}.")
+
+st.divider()
+
+# ------------------------------------------------------------------
+# Tabela com as transações mais recentes
+# ------------------------------------------------------------------
+files = list_transaction_files()
+if not files:
+    info_alert("Nenhum arquivo de transações encontrado. Clique em **Coletar agora (ETH)**.")
+else:
+    latest = files[-1]
+    st.subheader(f"Transações recentes — `{latest.name}`")
+    df: pd.DataFrame = load_df(latest)
+    if df.empty:
+        st.warning("Arquivo vazio.")
+    else:
+        # Ordena (mais novo primeiro) se houver timestamp
+        if "timestamp" in df.columns and df["timestamp"].notna().any():
+            df = df.sort_values(by="timestamp", ascending=False)
+        # Colunas mais relevantes primeiro
+        cols_show = [
+            "timestamp", "tx_id", "from_address", "to_address",
+            "amount", "token", "method", "chain", "score", "reasons"
+        ]
+        cols_show = [c for c in cols_show if c in df.columns]
+        st.dataframe(
+            df[cols_show],
+            height=520,
+            use_container_width=True
+        )
