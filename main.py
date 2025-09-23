@@ -53,7 +53,9 @@ def try_load_eth_collector():
     try:
         from app.collectors.eth_collector import load_from_eth  # type: ignore
         return load_from_eth
-    except Exception:
+    except Exception as e:
+        # <— isso faz aparecer no log o motivo real (ex.: falta de 'requests')
+        print(f"[WARN] Falhou import do coletor ETH: {e}")
         return None
 
 DATA_DIR = Path("app/data")
