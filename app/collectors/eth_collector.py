@@ -1,18 +1,13 @@
-# Coletor on-chain (Ethereum) resiliente:
-# - Lê segredos do Streamlit (st.secrets) e do ambiente (os.getenv)
-# - Prioriza Etherscan quando ETHERSCAN_API_KEY estiver presente
-# - Fallback para RPC público com retries/backoff
+# app/collectors/eth_collector.py
 from __future__ import annotations
 import os, time, requests
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 
-# -----------------------------------------------------------------------------
-# helpers p/ ler secrets/env de forma unificada
 def _get_secret(name: str, default: str = "") -> str:
     try:
-        import streamlit as st  # disponível no Cloud e local
+        import streamlit as st
         if name in st.secrets:
             v = st.secrets[name]
             if isinstance(v, (int, float)):
@@ -23,7 +18,6 @@ def _get_secret(name: str, default: str = "") -> str:
     return os.getenv(name, default)
 
 def _get_secret_list(name: str) -> List[str]:
-    # aceita: lista TOML (["0x..","0x.."]) OU string "0x..,0x.."
     import json
     raw = _get_secret(name, "")
     if not raw:
@@ -35,17 +29,13 @@ def _get_secret_list(name: str) -> List[str]:
         except Exception:
             pass
     return [a.strip() for a in raw.split(",") if a.strip()]
-# -----------------------------------------------------------------------------
 
-# ============================ Parâmetros por ambiente =========================
-# ----- Etherscan -----
 ETHERSCAN_API_KEY = _get_secret("ETHERSCAN_API_KEY").strip()
 ETHERSCAN_ADDRESSES = _get_secret_list("ETHERSCAN_ADDRESSES")
 ETH_BLOCKS_BACK = int(_get_secret("ETH_BLOCKS_BACK", "20"))
 ETH_MAX_TX = int(_get_secret("ETH_MAX_TX", "100"))
 ETHERSCAN_MAX_TX_PER_ADDR = int(_get_secret("ETHERSCAN_MAX_TX_PER_ADDR", "100"))
 
-# ----- RPC público (fallback) -----
 RPC_URLS = [u.strip() for u in _get_secret(
     "ETH_RPC_URL",
     "https://ethereum.publicnode.com,https://eth.llamarpc.com,https://cloudflare-eth.com"
@@ -54,15 +44,13 @@ RPC_TIMEOUT = int(_get_secret("ETH_RPC_TIMEOUT", "25"))
 RPC_RETRIES = int(_get_secret("ETH_RPC_RETRIES", "2"))
 RPC_BACKOFF = float(_get_secret("ETH_RPC_BACKOFF", "0.8"))
 
-# ----- Filtros simples -----
-ONLY_ERC20 = _get_secret("ETH_ONLY_ERC20", "false").lower() == "true"   # placeholder
+ONLY_ERC20 = _get_secret("ETH_ONLY_ERC20", "false").lower() == "true"
 MIN_ETH_VALUE = float(_get_secret("ETH_INCLUDE_ETH_VALUE_MIN", "0.0"))
 FILTER_FROM = {a.strip().lower() for a in _get_secret("ETH_FILTER_FROM", "").split(",") if a.strip()}
 FILTER_TO = {a.strip().lower() for a in _get_secret("ETH_FILTER_TO", "").split(",") if a.strip()}
 MONITOR_ADDR = {a.strip().lower() for a in _get_secret("ETH_MONITOR_ADDRESSES", "").split(",") if a.strip()}
 REQUIRE_MATCH = _get_secret("REQUIRE_MATCH", "false").lower() == "true"
 
-# ================================ Utilidades =================================
 def _hex_to_int(x: Optional[str]) -> int:
     try:
         return int(x or "0x0", 16)
@@ -110,7 +98,6 @@ def _passes_filters(tx_from: str, tx_to: str, amount_eth: float) -> bool:
         return False
     return True
 
-# ========================== Fallback via RPC público ==========================
 def _rpc_any(method: str, params: list) -> Optional[Dict[str, Any] | Any]:
     last_err: Optional[Exception] = None
     for url in RPC_URLS:
@@ -170,7 +157,6 @@ def _collect_via_rpc(max_tx: int) -> List[Dict[str, Any]]:
             })
     return out
 
-# ============================== Etherscan preferido ===========================
 def _etherscan_get_block_number() -> Optional[int]:
     try:
         url = "https://api.etherscan.io/api"
@@ -214,7 +200,7 @@ def _etherscan_txlist(addr: str, start_block: int, max_rows: int) -> List[Dict[s
             break
     return out[:max_rows]
 
-def _normalize_etherscan_row(row: Dict[str, Any]) -> Dict[str, Any]]:
+def _normalize_etherscan_row(row: Dict[str, Any]) -> Dict[str, Any]:
     frm = row.get("from", "")
     to = row.get("to", "")
     amount_eth = _wei_to_eth_from_str(row.get("value"))
@@ -242,7 +228,7 @@ def _collect_via_etherscan(max_tx: int) -> List[Dict[str, Any]]:
             break
         rows = _etherscan_txlist(addr, start_block, min(ETHERSCAN_MAX_TX_PER_ADDR, max_tx - len(all_rows)))
         all_rows.extend(rows)
-        time.sleep(0.25)  # rate limit (free ~5/s)
+        time.sleep(0.25)
     out: List[Dict[str, Any]] = []
     for r in all_rows:
         tx = _normalize_etherscan_row(r)
@@ -252,7 +238,6 @@ def _collect_via_etherscan(max_tx: int) -> List[Dict[str, Any]]:
             break
     return out
 
-# ============================== Entrada principal ============================
 def load_from_eth(data_dir: Path) -> List[Dict[str, Any]]:
     try:
         total_limit = ETH_MAX_TX
