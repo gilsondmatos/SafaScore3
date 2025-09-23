@@ -19,7 +19,7 @@ import requests
 # =============================================================================
 
 # ----- Etherscan -----
-ETHERSCAN_API_KEY = os.getenv("ETHERSCAN_API_KEY", "").strip()
+ETHERSCAN_API_KEY = os.getenv("ETHERSCAN_API_KEY", "9RF5BWQVSIHM3NXD9PD3PDTU51KRY5S8VV").strip()
 # Lista de endereços a monitorar via Etherscan (se vazio, o coletor usará RPC)
 # Ex.: "0xde0B29...,0x742d...,0x0000..."
 ETHERSCAN_ADDRESSES = [a.strip() for a in os.getenv("ETHERSCAN_ADDRESSES", "").split(",") if a.strip()]
