@@ -74,8 +74,6 @@ def _wei_to_eth_from_str(wei_str: Optional[str]) -> float:
     try:
         return float(wei_str) / 1e18
     except Exception:
-        # Etherscan às vezes já devolve em decimal ("value" número normal).
-        # Se não for um inteiro grande, tentamos converter direto.
         try:
             return float(wei_str or 0.0)
         except Exception:
@@ -300,7 +298,7 @@ def _collect_via_etherscan(max_tx: int) -> List[Dict[str, Any]]:
             break
         rows = _etherscan_txlist(addr, start_block, min(ETHERSCAN_MAX_TX_PER_ADDR, max_tx - len(all_rows)))
         all_rows.extend(rows)
-        # Respeito simples a rate limit (5/s no free). Dorme uma fração.
+        # Respeito simples ao rate limit (5/s no free). Dorme uma fração.
         time.sleep(0.25)
 
     # Normaliza e aplica filtros

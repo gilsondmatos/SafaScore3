@@ -19,7 +19,35 @@ except Exception:
 
 from app.engine.scoring import ScoreEngine
 from app.alerts.telegram import TelegramAlerter
-from app.collectors.mock_collector import load_input_or_mock
+
+# -------- mock import robusto --------
+def _mock_fallback(data_dir: Path) -> List[Dict[str, Any]]:
+    # Fallback absoluto se o import do mock falhar por qualquer motivo
+    from random import choices, uniform, randint
+    from datetime import timedelta
+    def _addr() -> str: return "0x" + "".join(choices("0123456789abcdef", k=40))
+    def _now_iso(mins: int=0) -> str: 
+        return (datetime.now(timezone.utc) - timedelta(minutes=mins)).isoformat()
+    out = []
+    for i in range(8):
+        out.append({
+            "tx_id": f"MOCKFALL-{int(datetime.now().timestamp())}-{i}",
+            "timestamp": _now_iso(randint(0,60)),
+            "from_address": _addr(),
+            "to_address": _addr(),
+            "amount": round(uniform(0.01, 2.0), 6),
+            "token": "ETH",
+            "method": "TRANSFER",
+            "chain": "MOCK",
+        })
+    return out
+
+try:
+    from app.collectors.mock_collector import load_input_or_mock  # type: ignore
+except Exception:
+    print("[WARN] Import do mock_collector falhou. Usando fallback interno.")
+    def load_input_or_mock(data_dir: Path) -> List[Dict[str, Any]]:
+        return _mock_fallback(data_dir)
 
 def try_load_eth_collector():
     try:
@@ -147,20 +175,20 @@ def main():
     # ---- seleção de coletor ----
     collector = pick_collector()
     txs: List[Dict[str, Any]] = []
+
     if collector == "eth":
         load_from_eth = try_load_eth_collector()
         if load_from_eth is None:
-            print("[WARN] Coletor ETH indisponível. Usando mock.")
+            print("[WARN] Coletor ETH indisponível. Usando MOCK.")
             txs = load_input_or_mock(DATA_DIR)
         else:
             try:
                 txs = load_from_eth(DATA_DIR)
+                if not txs:
+                    print("[WARN] Coletor ETH não retornou dados. Usando MOCK.")
+                    txs = load_input_or_mock(DATA_DIR)
             except Exception as e:
-                # Proteção extra: qualquer erro aqui -> mock (pipeline não cai)
-                print(f"[WARN] Erro no coletor ETH ({e}). Usando mock.")
-                txs = load_input_or_mock(DATA_DIR)
-            if not txs:
-                print("[WARN] Coletor ETH não retornou dados. Usando mock.")
+                print(f"[WARN] Erro no coletor ETH ({e}). Usando MOCK.")
                 txs = load_input_or_mock(DATA_DIR)
     else:
         txs = load_input_or_mock(DATA_DIR)
