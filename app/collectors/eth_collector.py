@@ -1,13 +1,25 @@
-# app/collectors/eth_collector.py
+# Coletor on-chain (Ethereum) com prioridade Etherscan e fallback RPC.
+# Não depende obrigatoriamente de 'requests': usa se houver; senão usa urllib.
+
 from __future__ import annotations
-import os, time, requests
+import os, time, json
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 
+# requests é opcional
+try:
+    import requests  # type: ignore
+except Exception:
+    requests = None  # vamos cair em urllib quando for o caso
+
+import urllib.request
+import urllib.error
+
+# ---------- helpers para ler configs de st.secrets OU env ----------
 def _get_secret(name: str, default: str = "") -> str:
     try:
-        import streamlit as st
+        import streamlit as st  # type: ignore
         if name in st.secrets:
             v = st.secrets[name]
             if isinstance(v, (int, float)):
@@ -18,7 +30,6 @@ def _get_secret(name: str, default: str = "") -> str:
     return os.getenv(name, default)
 
 def _get_secret_list(name: str) -> List[str]:
-    import json
     raw = _get_secret(name, "")
     if not raw:
         return []
@@ -30,6 +41,35 @@ def _get_secret_list(name: str) -> List[str]:
             pass
     return [a.strip() for a in raw.split(",") if a.strip()]
 
+# ---------- HTTP com fallback (requests -> urllib) ----------
+def http_get(url: str, params: Optional[Dict[str, Any]] = None, timeout: int = 20) -> Dict[str, Any]:
+    if requests:
+        r = requests.get(url, params=params, timeout=timeout)
+        r.raise_for_status()
+        return r.json()
+    # urllib
+    if params:
+        from urllib.parse import urlencode
+        url = f"{url}?{urlencode(params)}"
+    req = urllib.request.Request(url, method="GET")
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        data = resp.read().decode("utf-8")
+        return json.loads(data)
+
+def http_post(url: str, payload: Dict[str, Any], timeout: int = 20) -> Dict[str, Any]:
+    if requests:
+        r = requests.post(url, json=payload, timeout=timeout)
+        r.raise_for_status()
+        return r.json()
+    # urllib
+    body = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(url, data=body, method="POST",
+                                 headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        data = resp.read().decode("utf-8")
+        return json.loads(data)
+
+# ---------- Parâmetros ----------
 ETHERSCAN_API_KEY = _get_secret("ETHERSCAN_API_KEY").strip()
 ETHERSCAN_ADDRESSES = _get_secret_list("ETHERSCAN_ADDRESSES")
 ETH_BLOCKS_BACK = int(_get_secret("ETH_BLOCKS_BACK", "20"))
@@ -44,18 +84,16 @@ RPC_TIMEOUT = int(_get_secret("ETH_RPC_TIMEOUT", "25"))
 RPC_RETRIES = int(_get_secret("ETH_RPC_RETRIES", "2"))
 RPC_BACKOFF = float(_get_secret("ETH_RPC_BACKOFF", "0.8"))
 
-ONLY_ERC20 = _get_secret("ETH_ONLY_ERC20", "false").lower() == "true"
 MIN_ETH_VALUE = float(_get_secret("ETH_INCLUDE_ETH_VALUE_MIN", "0.0"))
 FILTER_FROM = {a.strip().lower() for a in _get_secret("ETH_FILTER_FROM", "").split(",") if a.strip()}
 FILTER_TO = {a.strip().lower() for a in _get_secret("ETH_FILTER_TO", "").split(",") if a.strip()}
 MONITOR_ADDR = {a.strip().lower() for a in _get_secret("ETH_MONITOR_ADDRESSES", "").split(",") if a.strip()}
 REQUIRE_MATCH = _get_secret("REQUIRE_MATCH", "false").lower() == "true"
 
+# ---------- Utils ----------
 def _hex_to_int(x: Optional[str]) -> int:
-    try:
-        return int(x or "0x0", 16)
-    except Exception:
-        return 0
+    try: return int(x or "0x0", 16)
+    except Exception: return 0
 
 def _wei_to_eth_from_hex(wei_hex: Optional[str]) -> float:
     return _hex_to_int(wei_hex) / 1e18
@@ -64,56 +102,43 @@ def _wei_to_eth_from_str(wei_str: Optional[str]) -> float:
     try:
         return float(wei_str) / 1e18
     except Exception:
-        try:
-            return float(wei_str or 0.0)
-        except Exception:
-            return 0.0
+        try: return float(wei_str or 0.0)
+        except Exception: return 0.0
 
 def _block_ts_to_iso(ts_hex: Optional[str]) -> str:
     ts = _hex_to_int(ts_hex)
     return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
 
 def _to_iso_from_int(ts_int: int) -> str:
-    try:
-        return datetime.fromtimestamp(int(ts_int), tz=timezone.utc).isoformat()
-    except Exception:
-        return ""
+    try: return datetime.fromtimestamp(int(ts_int), tz=timezone.utc).isoformat()
+    except Exception: return ""
 
 def _tx_method(input_data: str) -> str:
     return "TRANSFER" if (not input_data or input_data == "0x") else "CALL"
 
 def _passes_filters(tx_from: str, tx_to: str, amount_eth: float) -> bool:
-    fa = (tx_from or "").lower()
-    ta = (tx_to or "").lower()
-    if MIN_ETH_VALUE and amount_eth < MIN_ETH_VALUE:
-        return False
+    fa, ta = (tx_from or "").lower(), (tx_to or "").lower()
+    if MIN_ETH_VALUE and amount_eth < MIN_ETH_VALUE: return False
     has_monitor = (MONITOR_ADDR and (fa in MONITOR_ADDR or ta in MONITOR_ADDR))
     has_from = (FILTER_FROM and fa in FILTER_FROM)
     has_to = (FILTER_TO and ta in FILTER_TO)
-    if REQUIRE_MATCH:
-        return has_monitor or has_from or has_to
-    if FILTER_FROM and fa not in FILTER_FROM:
-        return False
-    if FILTER_TO and ta not in FILTER_TO:
-        return False
+    if REQUIRE_MATCH: return has_monitor or has_from or has_to
+    if FILTER_FROM and fa not in FILTER_FROM: return False
+    if FILTER_TO and ta not in FILTER_TO: return False
     return True
 
+# ---------- RPC (fallback) ----------
 def _rpc_any(method: str, params: list) -> Optional[Dict[str, Any] | Any]:
     last_err: Optional[Exception] = None
     for url in RPC_URLS:
         for attempt in range(RPC_RETRIES):
             try:
-                r = requests.post(
-                    url,
-                    json={"jsonrpc": "2.0", "id": 1, "method": method, "params": params},
-                    timeout=RPC_TIMEOUT,
-                )
-                r.raise_for_status()
-                j = r.json()
-                if j.get("error"):
+                j = http_post(url, {"jsonrpc": "2.0", "id": 1, "method": method, "params": params},
+                              timeout=RPC_TIMEOUT)
+                if isinstance(j, dict) and j.get("error"):
                     last_err = RuntimeError(str(j["error"]))
                 else:
-                    return j.get("result")
+                    return j.get("result") if isinstance(j, dict) else None
             except Exception as e:
                 last_err = e
                 time.sleep(RPC_BACKOFF * (attempt + 1))
@@ -129,22 +154,17 @@ def _collect_via_rpc(max_tx: int) -> List[Dict[str, Any]]:
         return out
     head = _hex_to_int(head_hex)
     start = max(0, head - ETH_BLOCKS_BACK)
+
     for n in range(head, start - 1, -1):
-        if len(out) >= max_tx:
-            break
+        if len(out) >= max_tx: break
         blk = _rpc_any("eth_getBlockByNumber", [hex(n), True]) or {}
-        if not blk:
-            continue
+        if not blk: continue
         ts_iso = _block_ts_to_iso(blk.get("timestamp"))
-        txs = blk.get("transactions") or []
-        for t in txs:
-            if len(out) >= max_tx:
-                break
-            frm = t.get("from") or ""
-            to = t.get("to") or ""
+        for t in blk.get("transactions") or []:
+            if len(out) >= max_tx: break
+            frm, to = t.get("from") or "", t.get("to") or ""
             amount_eth = _wei_to_eth_from_hex(t.get("value"))
-            if not _passes_filters(frm, to, amount_eth):
-                continue
+            if not _passes_filters(frm, to, amount_eth): continue
             out.append({
                 "tx_id": t.get("hash", ""),
                 "timestamp": ts_iso,
@@ -157,15 +177,14 @@ def _collect_via_rpc(max_tx: int) -> List[Dict[str, Any]]:
             })
     return out
 
+# ---------- Etherscan ----------
 def _etherscan_get_block_number() -> Optional[int]:
     try:
-        url = "https://api.etherscan.io/api"
-        params = {"module": "proxy", "action": "eth_blockNumber", "apikey": ETHERSCAN_API_KEY}
-        r = requests.get(url, params=params, timeout=15)
-        r.raise_for_status()
-        j = r.json()
+        j = http_get("https://api.etherscan.io/api",
+                    {"module": "proxy", "action": "eth_blockNumber", "apikey": ETHERSCAN_API_KEY},
+                    timeout=15)
         res = j.get("result")
-        if res and isinstance(res, str) and res.startswith("0x"):
+        if isinstance(res, str) and res.startswith("0x"):
             return int(res, 16)
     except Exception as e:
         print(f"[WARN] Falha ao obter blockNumber via Etherscan: {e}")
@@ -176,24 +195,18 @@ def _etherscan_txlist(addr: str, start_block: int, max_rows: int) -> List[Dict[s
     page, per_page = 1, min(max_rows, 10000)
     while len(out) < max_rows:
         try:
-            url = "https://api.etherscan.io/api"
-            params = {
+            j = http_get("https://api.etherscan.io/api", {
                 "module": "account", "action": "txlist", "address": addr,
                 "startblock": start_block, "endblock": 99999999,
                 "page": page, "offset": per_page, "sort": "desc",
                 "apikey": ETHERSCAN_API_KEY,
-            }
-            r = requests.get(url, params=params, timeout=20)
-            r.raise_for_status()
-            j = r.json()
+            }, timeout=20)
             if j.get("status") == "0" and j.get("message") != "OK":
                 break
             rows = j.get("result") or []
-            if not rows:
-                break
+            if not rows: break
             out.extend(rows)
-            if len(rows) < per_page:
-                break
+            if len(rows) < per_page: break
             page += 1
         except Exception as e:
             print(f"[WARN] Falha em txlist para {addr}: {e}")
@@ -201,8 +214,7 @@ def _etherscan_txlist(addr: str, start_block: int, max_rows: int) -> List[Dict[s
     return out[:max_rows]
 
 def _normalize_etherscan_row(row: Dict[str, Any]) -> Dict[str, Any]:
-    frm = row.get("from", "")
-    to = row.get("to", "")
+    frm, to = row.get("from", ""), row.get("to", "")
     amount_eth = _wei_to_eth_from_str(row.get("value"))
     return {
         "tx_id": row.get("hash", ""),
@@ -222,22 +234,23 @@ def _collect_via_etherscan(max_tx: int) -> List[Dict[str, Any]]:
     if not head:
         return []
     start_block = max(0, head - ETH_BLOCKS_BACK)
+
     all_rows: List[Dict[str, Any]] = []
     for addr in ETHERSCAN_ADDRESSES:
-        if len(all_rows) >= max_tx:
-            break
+        if len(all_rows) >= max_tx: break
         rows = _etherscan_txlist(addr, start_block, min(ETHERSCAN_MAX_TX_PER_ADDR, max_tx - len(all_rows)))
         all_rows.extend(rows)
-        time.sleep(0.25)
+        time.sleep(0.25)  # respeita rate limit do plano free
+
     out: List[Dict[str, Any]] = []
     for r in all_rows:
         tx = _normalize_etherscan_row(r)
         if _passes_filters(tx["from_address"], tx["to_address"], tx["amount"]):
             out.append(tx)
-        if len(out) >= max_tx:
-            break
+        if len(out) >= max_tx: break
     return out
 
+# ---------- Entrada principal ----------
 def load_from_eth(data_dir: Path) -> List[Dict[str, Any]]:
     try:
         total_limit = ETH_MAX_TX
