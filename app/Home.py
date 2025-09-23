@@ -3,8 +3,6 @@ from pathlib import Path
 
 import pandas as pd
 import streamlit as st
-import requests
-st.caption(f"requests: {requests.__version__}")
 
 from app.ui.utils import (
     ROOT, DATA_DIR, list_transaction_files, load_df,
